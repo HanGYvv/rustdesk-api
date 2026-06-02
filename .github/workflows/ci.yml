@@ -1,0 +1,88 @@
+name: ci
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+jobs:
+  go-test:
+    name: Go tests
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Read Go version
+        id: go-version
+        run: |
+          version="$(sed -n 's/^toolchain go//p' go.mod | head -n 1)"
+          if [ -z "${version}" ]; then
+            echo "Unable to determine Go version from go.mod" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ steps.go-version.outputs.version }}
+
+      - name: Run tests
+        run: go test -vet=off $(go list ./... | grep -v '/lib/cache$')
+
+  docker-build:
+    name: Docker build checks
+    runs-on: ubuntu-22.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - { platform: "amd64", docker_platform: "linux/amd64", dockerfile: "Dockerfile", buildarch: "amd64" }
+          - { platform: "arm64", docker_platform: "linux/arm64", dockerfile: "Dockerfile", buildarch: "arm64" }
+          - { platform: "armv7l", docker_platform: "linux/arm/v7", dockerfile: "Dockerfile", buildarch: "armv7l" }
+          - { platform: "amd64", docker_platform: "linux/amd64", dockerfile: "Dockerfile_full_s6", buildarch: "amd64" }
+          - { platform: "arm64", docker_platform: "linux/arm64", dockerfile: "Dockerfile_full_s6", buildarch: "arm64" }
+          - { platform: "armv7l", docker_platform: "linux/arm/v7", dockerfile: "Dockerfile_full_s6", buildarch: "armv7l" }
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Prepare smoke-test build context
+        run: |
+          mkdir -p amd64/release arm64/release armv7l/release
+          for arch in amd64 arm64 armv7l; do
+            printf '#!/bin/sh\nexit 0\n' > "${arch}/release/apimain"
+            chmod +x "${arch}/release/apimain"
+          done
+
+      - name: Set up QEMU
+        if: ${{ matrix.job.platform != 'amd64' }}
+        uses: docker/setup-qemu-action@v4
+        with:
+          cache-image: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Check Docker image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./${{ matrix.job.dockerfile }}
+          platforms: ${{ matrix.job.docker_platform }}
+          push: false
+          load: false
+          provenance: false
+          build-args: |
+            BUILDARCH=${{ matrix.job.buildarch }}

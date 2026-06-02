@@ -1,0 +1,457 @@
+name: docker
+
+permissions:
+  contents: read
+  packages: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release tag to build, for example v1.2.3.
+        required: true
+        type: string
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-[0-9]+"
+      - "[0-9]+.[0-9]+.[0-9]+-[0-9]+"
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NODE_VERSION: "20"
+  LATEST_TAG: latest
+  PROJECT_URL: https://github.com/${{ github.repository }}
+  DOCKER_IMAGE: ${{ secrets.DOCKER_HUB_USERNAME }}/rustdesk-api-s6
+  DOCKER_IMAGE_CLASSIC: ${{ secrets.DOCKER_HUB_USERNAME }}/rustdesk-api
+  GHCR_IMAGE: ghcr.io/${{ secrets.DOCKER_HUB_USERNAME }}/rustdesk-api-s6
+  GHCR_IMAGE_CLASSIC: ghcr.io/${{ secrets.DOCKER_HUB_USERNAME }}/rustdesk-api
+
+jobs:
+  prepare:
+    name: Prepare release metadata
+    runs-on: ubuntu-22.04
+    outputs:
+      release-tag: ${{ steps.version.outputs.release-tag }}
+      release-version: ${{ steps.version.outputs.release-version }}
+
+    steps:
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.version }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+
+          version="${tag#v}"
+
+          echo "release-tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "release-version=${version}" >> "${GITHUB_OUTPUT}"
+
+  build-linux:
+    name: Build Linux - ${{ matrix.job.name }}
+    needs: prepare
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - { name: "amd64", platform: "amd64" }
+          - { name: "arm64v8", platform: "arm64" }
+          - { name: "armv7", platform: "armv7l" }
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.release-tag }}
+          path: source
+
+      - name: Read Go version
+        id: go-version
+        working-directory: source
+        run: |
+          version="$(sed -n 's/^toolchain go//p' go.mod | head -n 1)"
+          if [ -z "${version}" ]; then
+            echo "Unable to determine Go version from go.mod" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ steps.go-version.outputs.version }}
+          cache-dependency-path: source/go.mod
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Checkout web client source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ github.repository_owner }}/rustdesk-api-web
+          path: source/rustdesk-api-web
+          ref: master
+
+      - name: Build admin web client assets
+        working-directory: source/rustdesk-api-web
+        run: |
+          npm install
+          npm run build
+          mkdir -p ../resources/admin
+          cp -ar dist/* ../resources/admin/
+
+      - name: Download Go dependencies
+        working-directory: source
+        run: go mod download
+
+      - name: Write version file
+        working-directory: source
+        run: echo "${{ needs.prepare.outputs.release-version }}" > resources/version
+
+      - name: Generate Swagger docs
+        working-directory: source
+        run: |
+          go install github.com/swaggo/swag/cmd/swag@latest
+          swag init -g cmd/apimain.go --output docs/api --instanceName api --exclude http/controller/admin
+          swag init -g cmd/apimain.go --output docs/admin --instanceName admin --exclude http/controller/api
+
+      - name: Build archive
+        working-directory: source
+        run: |
+          mkdir -p release/data release/runtime
+          cp -ar resources release/
+          cp -ar docs release/
+          cp -ar conf release/
+
+          if [ "${{ matrix.job.platform }}" = "arm64" ]; then
+            wget https://musl.ljw.red/aarch64-linux-musl-cross.tgz
+            tar -xf aarch64-linux-musl-cross.tgz
+            export PATH="$PATH:$PWD/aarch64-linux-musl-cross/bin"
+            GOOS=linux GOARCH=arm64 CC=aarch64-linux-musl-gcc CGO_LDFLAGS="-static" CGO_ENABLED=1 \
+              go build -ldflags "-s -w" -o ./release/apimain ./cmd/apimain.go
+          elif [ "${{ matrix.job.platform }}" = "armv7l" ]; then
+            wget https://musl.ljw.red/armv7l-linux-musleabihf-cross.tgz
+            tar -xf armv7l-linux-musleabihf-cross.tgz
+            export PATH="$PATH:$PWD/armv7l-linux-musleabihf-cross/bin"
+            GOOS=linux GOARCH=arm GOARM=7 CC=armv7l-linux-musleabihf-gcc CGO_LDFLAGS="-static" CGO_ENABLED=1 \
+              go build -ldflags "-s -w" -o ./release/apimain ./cmd/apimain.go
+          else
+            sudo apt-get update
+            sudo apt-get install -y musl musl-dev musl-tools
+            GOOS=linux GOARCH=amd64 CC=musl-gcc CGO_LDFLAGS="-static" CGO_ENABLED=1 \
+              go build -ldflags "-s -w" -o ./release/apimain ./cmd/apimain.go
+          fi
+
+          tar -czf "linux-${{ matrix.job.platform }}.tar.gz" ./release
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: rustdesk-api-linux-${{ matrix.job.platform }}
+          path: |
+            source/linux-${{ matrix.job.platform }}.tar.gz
+
+  docker-classic:
+    name: Push classic image - ${{ matrix.job.name }}
+    needs:
+      - prepare
+      - build-linux
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - { name: "amd64", platform: "amd64", docker_platform: "linux/amd64" }
+          - { name: "arm64v8", platform: "arm64", docker_platform: "linux/arm64" }
+          - { name: "armv7", platform: "armv7l", docker_platform: "linux/arm/v7" }
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.release-tag }}
+          path: source
+
+      - name: Set up QEMU
+        if: ${{ matrix.job.platform != 'amd64' }}
+        uses: docker/setup-qemu-action@v4
+        with:
+          cache-image: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_PASSWORD }}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.DOCKER_IMAGE_CLASSIC }}
+
+      - name: Download binaries
+        uses: actions/download-artifact@v8
+        with:
+          name: rustdesk-api-linux-${{ matrix.job.platform }}
+          path: source
+
+      - name: Unpack binaries
+        run: |
+          mkdir -p source/${{ matrix.job.platform }}
+          tar -xzf source/linux-${{ matrix.job.platform }}.tar.gz -C source/${{ matrix.job.platform }}
+
+      - name: Build and push Docker Hub image
+        uses: docker/build-push-action@v7
+        with:
+          context: source
+          file: source/Dockerfile
+          platforms: ${{ matrix.job.docker_platform }}
+          push: true
+          provenance: false
+          build-args: |
+            BUILDARCH=${{ matrix.job.platform }}
+          tags: |
+            ${{ env.DOCKER_IMAGE_CLASSIC }}:${{ needs.prepare.outputs.release-tag }}-${{ matrix.job.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Build and push GHCR image
+        uses: docker/build-push-action@v7
+        with:
+          context: source
+          file: source/Dockerfile
+          platforms: ${{ matrix.job.docker_platform }}
+          push: true
+          provenance: false
+          build-args: |
+            BUILDARCH=${{ matrix.job.platform }}
+          tags: |
+            ${{ env.GHCR_IMAGE_CLASSIC }}:${{ needs.prepare.outputs.release-tag }}-${{ matrix.job.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  docker-s6:
+    name: Push s6 image - ${{ matrix.job.name }}
+    needs:
+      - prepare
+      - build-linux
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - { name: "amd64", platform: "amd64", docker_platform: "linux/amd64" }
+          - { name: "arm64v8", platform: "arm64", docker_platform: "linux/arm64" }
+          - { name: "armv7", platform: "armv7l", docker_platform: "linux/arm/v7" }
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref }}
+          path: source
+
+      - name: Set up QEMU
+        if: ${{ matrix.job.platform != 'amd64' }}
+        uses: docker/setup-qemu-action@v4
+        with:
+          cache-image: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_PASSWORD }}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.DOCKER_IMAGE }}
+
+      - name: Download binaries
+        uses: actions/download-artifact@v8
+        with:
+          name: rustdesk-api-linux-${{ matrix.job.platform }}
+          path: source
+
+      - name: Unpack binaries
+        run: |
+          mkdir -p source/${{ matrix.job.platform }}
+          tar -xzf source/linux-${{ matrix.job.platform }}.tar.gz -C source/${{ matrix.job.platform }}
+
+      - name: Build and push Docker Hub image
+        uses: docker/build-push-action@v7
+        with:
+          context: source
+          file: source/Dockerfile_full_s6
+          platforms: ${{ matrix.job.docker_platform }}
+          push: true
+          provenance: false
+          build-args: |
+            BUILDARCH=${{ matrix.job.platform }}
+          tags: |
+            ${{ env.DOCKER_IMAGE }}:${{ needs.prepare.outputs.release-tag }}-${{ matrix.job.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Build and push GHCR image
+        uses: docker/build-push-action@v7
+        with:
+          context: source
+          file: source/Dockerfile_full_s6
+          platforms: ${{ matrix.job.docker_platform }}
+          push: true
+          provenance: false
+          build-args: |
+            BUILDARCH=${{ matrix.job.platform }}
+          tags: |
+            ${{ env.GHCR_IMAGE }}:${{ needs.prepare.outputs.release-tag }}-${{ matrix.job.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  docker-manifest:
+    name: Push Docker manifests
+    needs:
+      - prepare
+      - docker-classic
+      - docker-s6
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.release-tag }}
+          path: source
+          submodules: recursive
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_PASSWORD }}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve source revision
+        id: revision
+        shell: bash
+        run: |
+          echo "sha=$(git -C source rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+
+      - name: Resolve created timestamp
+        id: created
+        shell: bash
+        run: |
+          echo "value=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${GITHUB_OUTPUT}"
+
+      - name: Create and push manifests
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.release-tag }}
+          PROJECT_URL: ${{ env.PROJECT_URL }}
+          DOCUMENTATION_URL: https://github.com/${{ github.repository }}/wiki
+          REVISION: ${{ steps.revision.outputs.sha }}
+          CREATED: ${{ steps.created.outputs.value }}
+        run: |
+          normalized="${RELEASE_TAG#v}"
+          major="${normalized%%.*}"
+
+          create_manifest() {
+            local image="$1"
+            local tag="$2"
+            local title="$3"
+            local description="$4"
+            local sources=""
+
+            for arch in amd64 arm64 armv7l; do
+              sources="${sources} ${image}:${RELEASE_TAG}-${arch}"
+            done
+
+            docker buildx imagetools create \
+              --tag "${image}:${tag}" \
+              --annotation "index:org.opencontainers.image.title=${title}" \
+              --annotation "index:org.opencontainers.image.description=${description}" \
+              --annotation "index:org.opencontainers.image.url=${PROJECT_URL}" \
+              --annotation "index:org.opencontainers.image.source=${PROJECT_URL}" \
+              --annotation "index:org.opencontainers.image.version=${RELEASE_TAG}" \
+              --annotation "index:org.opencontainers.image.revision=${REVISION}" \
+              --annotation "index:org.opencontainers.image.created=${CREATED}" \
+              --annotation "index:org.opencontainers.image.licenses=AGPL-3.0-or-later" \
+              --annotation "index:org.opencontainers.image.documentation=${DOCUMENTATION_URL}" \
+              ${sources}
+          }
+
+          for tag in "${RELEASE_TAG}" "${major}" "${LATEST_TAG}"; do
+            create_manifest "${DOCKER_IMAGE_CLASSIC}" "${tag}" "RustDesk API" "Self-hosted RustDesk API container image."
+            create_manifest "${GHCR_IMAGE_CLASSIC}" "${tag}" "RustDesk API" "Self-hosted RustDesk API container image."
+            create_manifest "${DOCKER_IMAGE}" "${tag}" "RustDesk API S6" "Self-hosted RustDesk API container image with s6-overlay."
+            create_manifest "${GHCR_IMAGE}" "${tag}" "RustDesk API S6" "Self-hosted RustDesk API container image with s6-overlay."
+          done
+
+  dockerhub-description:
+    name: Docker Hub description
+    needs:
+      - prepare
+      - docker-manifest
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.release-tag }}
+          path: source
+          submodules: recursive
+
+      - name: Update Docker Hub description
+        uses: peter-evans/dockerhub-description@v5
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_PASSWORD }}
+          repository: ${{ env.DOCKER_IMAGE }}
+          short-description: Self-hosted RustDesk API container image with s6-overlay.
+          readme-filepath: ./source/docker/README.md
+
+      - name: Update Docker Hub description - classic
+        uses: peter-evans/dockerhub-description@v5
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_PASSWORD }}
+          repository: ${{ env.DOCKER_IMAGE_CLASSIC }}
+          short-description: Self-hosted RustDesk API container image.
+          readme-filepath: ./source/docker-classic/README.md
