@@ -161,6 +161,8 @@ definitions:
     type: object
   admin.PeerForm:
     properties:
+      alias:
+        type: string
       cpu:
         type: string
       group_id:
@@ -248,6 +250,8 @@ definitions:
         type: boolean
       nickname:
         description: Password string           `json:"password" validate:"required,gte=4,lte=20"`
+        type: string
+      remark:
         type: string
       status:
         allOf:
@@ -589,6 +593,7 @@ definitions:
   model.Oauth:
     properties:
       auto_register:
+        description: RedirectUrl  string `json:"redirect_url"`
         type: boolean
       client_id:
         type: string
@@ -628,6 +633,8 @@ definitions:
     type: object
   model.Peer:
     properties:
+      alias:
+        type: string
       cpu:
         type: string
       created_at:
@@ -682,6 +689,9 @@ definitions:
     x-enum-comments:
       COMMON_STATUS_DISABLED: 通用状态 禁用
       COMMON_STATUS_ENABLE: 通用状态 启用
+    x-enum-descriptions:
+    - 通用状态 启用
+    - 通用状态 禁用
     x-enum-varnames:
     - COMMON_STATUS_ENABLE
     - COMMON_STATUS_DISABLED
@@ -734,6 +744,8 @@ definitions:
       is_admin:
         type: boolean
       nickname:
+        type: string
+      remark:
         type: string
       status:
         $ref: '#/definitions/model.StatusCode'

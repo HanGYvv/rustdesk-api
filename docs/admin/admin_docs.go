@@ -5621,6 +5621,9 @@ const docTemplateadmin = `{
         "admin.PeerForm": {
             "type": "object",
             "properties": {
+                "alias": {
+                    "type": "string"
+                },
                 "cpu": {
                     "type": "string"
                 },
@@ -5755,6 +5758,9 @@ const docTemplateadmin = `{
                 },
                 "nickname": {
                     "description": "Password string           ` + "`" + `json:\"password\" validate:\"required,gte=4,lte=20\"` + "`" + `",
+                    "type": "string"
+                },
+                "remark": {
                     "type": "string"
                 },
                 "status": {
@@ -6263,6 +6269,7 @@ const docTemplateadmin = `{
             "type": "object",
             "properties": {
                 "auto_register": {
+                    "description": "RedirectUrl  string ` + "`" + `json:\"redirect_url\"` + "`" + `",
                     "type": "boolean"
                 },
                 "client_id": {
@@ -6323,6 +6330,9 @@ const docTemplateadmin = `{
         "model.Peer": {
             "type": "object",
             "properties": {
+                "alias": {
+                    "type": "string"
+                },
                 "cpu": {
                     "type": "string"
                 },
@@ -6403,6 +6413,10 @@ const docTemplateadmin = `{
                 "COMMON_STATUS_DISABLED": "通用状态 禁用",
                 "COMMON_STATUS_ENABLE": "通用状态 启用"
             },
+            "x-enum-descriptions": [
+                "通用状态 启用",
+                "通用状态 禁用"
+            ],
             "x-enum-varnames": [
                 "COMMON_STATUS_ENABLE",
                 "COMMON_STATUS_DISABLED"
@@ -6480,6 +6494,9 @@ const docTemplateadmin = `{
                     "type": "boolean"
                 },
                 "nickname": {
+                    "type": "string"
+                },
+                "remark": {
                     "type": "string"
                 },
                 "status": {
