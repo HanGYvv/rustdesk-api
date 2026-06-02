@@ -18,7 +18,7 @@ go env -w GOARCH=${GOARCH}
 # Generate Swagger documentation if DOCS is not empty
 if [ -n "${DOCS}" ]; then
     # Check if swag is installed
-    if ! command -v swag &> /dev/null; then
+    if ! command -v swag 2>&1 > /dev/null; then
         echo "swag command not found. Please install it using:"
         echo "go install github.com/swaggo/swag/cmd/swag@latest"
         echo "Skipping Swagger documentation generation due to missing swag tool."
