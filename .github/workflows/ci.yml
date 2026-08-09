@@ -47,12 +47,12 @@ jobs:
       fail-fast: false
       matrix:
         job:
-          - { platform: "amd64", docker_platform: "linux/amd64", dockerfile: "Dockerfile", buildarch: "amd64" }
-          - { platform: "arm64", docker_platform: "linux/arm64", dockerfile: "Dockerfile", buildarch: "arm64" }
-          - { platform: "armv7l", docker_platform: "linux/arm/v7", dockerfile: "Dockerfile", buildarch: "armv7l" }
-          - { platform: "amd64", docker_platform: "linux/amd64", dockerfile: "Dockerfile_full_s6", buildarch: "amd64" }
-          - { platform: "arm64", docker_platform: "linux/arm64", dockerfile: "Dockerfile_full_s6", buildarch: "arm64" }
-          - { platform: "armv7l", docker_platform: "linux/arm/v7", dockerfile: "Dockerfile_full_s6", buildarch: "armv7l" }
+          - { platform: "amd64", docker_platform: "linux/amd64", dockerfile: "docker-classic/Dockerfile", buildarch: "amd64" }
+          - { platform: "arm64", docker_platform: "linux/arm64", dockerfile: "docker-classic/Dockerfile", buildarch: "arm64" }
+          - { platform: "armv7l", docker_platform: "linux/arm/v7", dockerfile: "docker-classic/Dockerfile", buildarch: "armv7l" }
+          - { platform: "amd64", docker_platform: "linux/amd64", dockerfile: "docker/Dockerfile", buildarch: "amd64" }
+          - { platform: "arm64", docker_platform: "linux/arm64", dockerfile: "docker/Dockerfile", buildarch: "arm64" }
+          - { platform: "armv7l", docker_platform: "linux/arm/v7", dockerfile: "docker/Dockerfile", buildarch: "armv7l" }
 
     steps:
       - name: Checkout

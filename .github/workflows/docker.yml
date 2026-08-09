@@ -223,7 +223,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: source
-          file: source/Dockerfile
+          file: source/docker-classic/Dockerfile
           platforms: ${{ matrix.job.docker_platform }}
           push: true
           provenance: false
@@ -237,7 +237,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: source
-          file: source/Dockerfile
+          file: source/docker-classic/Dockerfile
           platforms: ${{ matrix.job.docker_platform }}
           push: true
           provenance: false
@@ -311,7 +311,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: source
-          file: source/Dockerfile_full_s6
+          file: source/docker/Dockerfile
           platforms: ${{ matrix.job.docker_platform }}
           push: true
           provenance: false
@@ -325,7 +325,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: source
-          file: source/Dockerfile_full_s6
+          file: source/docker/Dockerfile
           platforms: ${{ matrix.job.docker_platform }}
           push: true
           provenance: false
