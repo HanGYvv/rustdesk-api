@@ -1,4 +1,4 @@
-FROM hangyvv/rustdesk-server-s6:latest AS server
+FROM hangyvv/rustdesk-server-s6:v1.0.1 AS server
 
 FROM alpine
 
